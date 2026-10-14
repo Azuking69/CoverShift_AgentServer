@@ -1,4 +1,4 @@
-"""AgentCore Runtime 用のエントリポイント。
+﻿"""AgentCore Runtime 用のエントリポイント。
 受け取る payload:
   {"action": "start",  "thread_id": "...", "store_id": "S1"}
   {"action": "resume", "thread_id": "...", "approved": true}
@@ -18,7 +18,7 @@ ACTOR_ID = os.getenv("AGENTCORE_ACTOR_ID", "covershift-exp")
 
 if MEMORY_ID:
     from langgraph_checkpoint_aws import AgentCoreMemorySaver
-    saver = AgentCoreMemorySaver(MEMORY_ID, region_name=os.getenv("AWS_REGION", "ap-northeast-1"))
+    saver = AgentCoreMemorySaver(MEMORY_ID, region_name=os.getenv("AWS_REGION", "ap-southeast-2"))
     BACKEND = "agentcore-memory"
 else:
     from langgraph.checkpoint.memory import InMemorySaver
