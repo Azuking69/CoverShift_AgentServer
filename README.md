@@ -1,0 +1,79 @@
+# AgentServer（CoverShift 実験用リポジトリ）
+
+## 目的
+教授の10/13フィードバック（DBを仲介しない構造の検討、既製のエージェント基盤の調査）を受けて、
+**同じLangGraph（CoverShiftの核心グラフ）を2つの基盤に載せ、同じ項目で動かして比べる**。
+- **V1：LangGraph Agent Server**（LangChain社の、グラフを動かすサーバー）
+- **V2：AWS AgentCore**（AWSの、エージェントを動かすサービス）
+「どちらが良いか」を決める資料ではなく、「動かしてわかったこと／わからないこと」を残すための実験。
+
+## 構成
+```
+AgentServer/
+├─ core/            LangGraph本体（V1・V2で共通の1か所。サービス固有のコードは入れない）
+├─ v1_agentserver/  V1：Agent Serverに載せる入口（entry.py, langgraph.json）と試験スクリプト
+├─ v2_aws/          V2：AgentCore Runtimeに載せる入口（app.py）と試験スクリプト
+├─ tests/           送信ログに実名が出ていないかの確認（check_outbound.py）
+├─ EXPERIMENTS.md   共通の実験項目 E1〜E5（変えないこと）
+└─ RESULTS.md       V1・V2の結果を並べた表（結果はここに書く）
+```
+`core/graph.py` の流れ：solver（本物のCP-SAT）→ explain（仮名化→偽のClaude→実名に戻す）→ manager_review（承認待ち interrupt）→ finalize。
+今のv6_gen（API→DB→ワーカー）の「グラフの部分」と同じ流れ。ただしv6_genでは、本物のソルバーは未接続でダミーだった。ここでは接続した。DB・世代番号（fencing）は外してある。
+
+## 前提・注意（正直に）
+- **Claude APIは、環境変数 `ANTHROPIC_API_KEY` があれば本物、なければ偽物（固定文）。**（`core/llm.py`）どちらでも、**送る直前の本文**を `outbound.log` に追記する。
+  - 本物を使うとき：`.env.example` を `.env` にコピーして鍵を入れる（`.env` はgitに入れない。鍵をチャットやコードに貼らない）。
+  - モデル名は `CLAUDE_MODEL`（既定 `claude-haiku-5-5`）。使えないとエラーになるので、その場合は変える。
+  - 費用：トークン数は `outbound.log` の `real_usage` に残る（E5用）。**APIの利用が、どの支払い・クレジットに乗るかは、わかりません**（Consoleの請求画面で確認すること）。
+- **ソルバーは本物のCP-SAT（OR-Tools）。** v6_genの `solver/main_solver.py` をそのままコピーした（`core/solver.py`）。入力は `core/fixtures.py` のダミーの6人×7日。
+  - 限界：早番・遅番の2種類のみ。制約は「1人1日1シフト」「最低人数」、目的は「不可希望日のペナルティ」だけ。経験者優先・教育配置・公平性は、まだ入っていない。
+  - この入力（6人×7日）では、1回の計算は約0.005〜0.009秒（この環境、5回計測）。実運用の規模・制約では、もっとかかる（わかりません）。
+  - E2用に、環境変数 `SOLVER_EXTRA_WAIT_SEC` で、計算の前に人工的な待ちを入れられる（計算中に落とす試験用。ソルバーの時間とは別）。
+- 仮名化は、`core/graph.py` の自前コード。「実名が出ない」という結果は、このコードの結果で、基盤が守ったわけではない。
+- v6_gen本体のリポジトリとは別。ここは実験用で、本番コードではない。
+- 動作確認した環境：Python 3.13（Linux）、langgraph 1.2.15、langgraph-api 0.16.0、bedrock-agentcore 1.24.1、langgraph-checkpoint-aws 1.2.5（2026-10-14）。
+- V2のAWS上での動作は未確認（AWSアカウントが必要。わかりません）。
+
+## coreだけの確認（サービスなし）
+```
+pip install langgraph ortools anthropic
+python tests/test_core.py     # ルートで実行。ソルバーの制約・承認待ち・実名なし
+```
+
+## V1：AgentServer（手元）
+```
+python -m venv .venv && . .venv/bin/activate     # Windowsは .venv\Scripts\activate
+# 本物のClaudeを使う場合：export ANTHROPIC_API_KEY=...（Windows PowerShell: $env:ANTHROPIC_API_KEY="..."）
+cd v1_agentserver && pip install -r requirements.txt
+langgraph dev --no-browser --no-reload --port 2024
+python tests/e1_e3_e4.py http://127.0.0.1:2024     # 別の端末で
+python ../tests/check_outbound.py outbound.log
+```
+- ポートが使われていると別の番号になる。起動ログの「API: http://…」を見る。
+- 開発用サーバーは「メモリ＋ときどきファイル保存」。**E2（落とす実験）の答えにはならない**。本番相当（PostgreSQL＋Redis、`langgraph up`）で試す。ライセンス条件は、先に公式で確認する。
+- 手元の開発用サーバーは、ライセンスキーなしで起動した（2026-10-14）。
+
+## V2：AWS AgentCore
+```
+cd v2_aws && pip install -r requirements.txt
+python app.py                                    # 手元 http://localhost:8080/invocations（仮の保存先）
+python tests/run_experiments.py local            # 別の端末で
+python ../tests/check_outbound.py outbound.log
+```
+AWSで試す（アカウントが必要。手順は未検証）：
+1. AgentCore Memoryを作る（コンソール、または boto3 `bedrock-agentcore-control` の `create_memory`。必須は name と eventExpiryDuration）。
+2. Runtimeにデプロイし、環境変数 `AGENTCORE_MEMORY_ID` に、作ったMemoryのIDを入れる。
+3. `python tests/run_experiments.py aws <agentRuntimeArn>`
+- `AGENTCORE_MEMORY_ID` が無いときは、仮の保存先（InMemorySaver）で動く。
+
+## 実験項目（詳細は EXPERIMENTS.md）
+E1 承認待ち→再開／E2 途中で落とす／E3 同じ案件の同時実行／E4 Claudeへの送信内容／E5 費用の目安
+
+## 現在の結果（詳細は RESULTS.md）
+- V1：E1・E3・E4 は手元で動いた。E2は判定できず（開発用サーバーのため）。
+- V2：E1・E4 は、仮の保存先で動いた。E3は、手元アプリでは両方実行された。**AWS上は未実施**。
+
+## 次にやること
+1. V2をAWSで試す（E1〜E3）。AgentCoreでinterruptが動くかが、最大の未確認点。
+2. V1のE2を、PostgreSQL版で試す（ライセンス条件の確認が先）。
+3. 結果を RESULTS.md に書き、システム設計構造の比較（V1資料）の「まだわからないこと」を更新する。
