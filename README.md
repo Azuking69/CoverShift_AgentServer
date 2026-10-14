@@ -39,7 +39,7 @@ AgentServer/
 - 仮名化は、`core/graph.py` の自前コード。「実名が出ない」という結果は、このコードの結果で、基盤が守ったわけではない。
 - v6_gen本体のリポジトリとは別。ここは実験用で、本番コードではない。
 - 動作確認した環境：Python 3.13（Linux）、langgraph 1.2.15、langgraph-api 0.16.0、bedrock-agentcore 1.24.1、langgraph-checkpoint-aws 1.2.5（2026-10-14）。
-- V2のAWS上での動作は未確認（AWSアカウントが必要。わかりません）。
+- V2は、AWS（シドニー）上でも動かした（2026-10-14）。結果は RESULTS.md。**作ったAWSのリソース（Runtime・Memory・IAMロール・S3のzip・CloudWatchログ）は、実験後にすべて削除した。**
 
 ## coreだけの確認（サービスなし）
 
@@ -79,12 +79,24 @@ AWSで試す（リージョン：シドニー `ap-southeast-2`。無料プラン
 
 1. zipを作る：`bash v2_aws/build_zip.sh`（Python **3.12**、arm64向け。約83MB。公式の例は3.13だが、ortoolsが入らないため）
 2. IAMロール・S3バケット・AgentCore Memoryを作る（手順は、AWSの画面を見ながら確認する）
-3. `create_agent_runtime`（boto3、`codeConfiguration` ＋ `entryPoint: ["app.py"]`）で作る
+3. Runtimeを作る（実際は、コンソールの「S3にアップロード」から作成。boto3の `create_agent_runtime` ＋ `codeConfiguration`・`entryPoint: ["app.py"]` でも作れるはずだが、今回は試していない）
 4. `python v2_aws/tests/run_experiments.py aws <agentRuntimeArn>`
 5. 終わったら、Runtime・S3のzip・Memoryを削除する
 
-- 未確認：環境変数（`AGENTCORE_MEMORY_ID`、`ANTHROPIC_API_KEY`）の渡し方、実行ロールに必要な権限。
+- 環境変数は `AGENTCORE_MEMORY_ID` を渡した。実行ロールには、Memory用に `bedrock-agentcore:CreateEvent, GetEvent, ListEvents, DeleteEvent, ListSessions, ListActors` を足した（最小限かは、わかりません）。`ANTHROPIC_API_KEY` は、AWSには渡していない（偽のClaudeで実験）。
+- 作ったものを消した記録：Runtime、Memory、IAMのロール・ポリシー、S3のバケット（zipが3つ）、CloudWatchのロググループ。**再実験するときは、作り直しが必要**（このリポジトリにAWSのリソースは残っていない）。
 - `AGENTCORE_MEMORY_ID` が無いときは、仮の保存先（InMemorySaver）で動く。
+
+## V0（基準）：PostgresSaver＋PostgreSQL（Agent Serverなし・ライセンス不要）
+
+今のv6_genと同じ形（LangGraph OSS＋PostgresSaver）。V1のPostgreSQL版がライセンスで動かなかったため、E2・E3の基準として追加した。
+
+```
+docker compose -f v0_postgres/docker-compose.yml up -d --wait
+pip install -r v0_postgres/requirements.txt
+python v0_postgres/e2.py
+docker compose -f v0_postgres/docker-compose.yml down -v      # 終わったら削除
+```
 
 ## 実験項目（詳細は EXPERIMENTS.md）
 
@@ -92,11 +104,14 @@ E1 承認待ち→再開／E2 途中で落とす／E3 同じ案件の同時実�
 
 ## 現在の結果（詳細は RESULTS.md）
 
+- V0（PostgresSaver＋PostgreSQL、基準）：E2（計算中に強制終了→`continue`で続き）・承認待ちの保存・E3（同時2本は両方実行）。Windows・Linuxで同じ。
+- V1のPostgreSQL版（`langgraph up`）：ライセンス確認で起動できず（E2は未実施）。
 - V1：E1・E3・E4 は手元で動いた。E2は判定できず（開発用サーバーのため）。
-- V2：E1・E4 は、仮の保存先で動いた。E3は、手元アプリでは両方実行された。**AWS上は未実施**。
+- V2（AWS、シドニー）：E1・E3・E4 とMemory保存（別セッションからの再開）は動いた。E3は2本とも実行された（重複）。E2は、停止後の状態（`next: solver`）までは確認したが、続きの実行は未確認。詳細は RESULTS.md
 
 ## 次にやること
 
-1. V2をAWSで試す（E1〜E3）。AgentCoreでinterruptが動くかが、最大の未確認点。
-2. V1のE2を、PostgreSQL版で試す（ライセンス条件の確認が先）。
-3. 結果を RESULTS.md に書き、システム設計構造の比較（V1資料）の「まだわからないこと」を更新する。
+1. **E5（費用）**：AWSの請求画面（Cost Explorer・Free Tier）の反映は、1日ほど後（推測です）。明日以降に金額を確認して、RESULTS.md に書く。
+2. V2のE2の残り：Memoryに残った状態から続きを実行する操作（`app.py` に `continue` を追加）。AWSのリソースが消えているので、作り直しが必要。
+3. V1のE2を、PostgreSQL版で試す（ライセンス条件の確認が先。有料プランが必要な可能性）。
+4. システム設計構造の比較（V1資料）の「まだわからないこと」を、RESULTS.md に合わせて更新する。
